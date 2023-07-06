@@ -1,12 +1,12 @@
 
 import requests
-import json
-import urllib.parse
 import vobject
 import random
 import string
 from datetime import datetime
 from caldav.davclient import DAVClient
+import xml.etree.ElementTree as ET
+from vobject import readOne
 
 
 '''
@@ -32,12 +32,22 @@ VERSION:2.0
 PRODID:-//davical5 Corp.//CalDAV Client//EN
 BEGIN:VEVENT
 SUMMARY:new event 2
-DTSTART:20230711T235900Z
-DTEND:20230712T040000Z
+DTSTART:20230710T200000Z
+DTEND:20230710T210000Z
 LOCATION:Example Location
-DESCRIPTION:This is an example added to calendar name with ics.
+DESCRIPTION:This is an update of the existing card.
 END:VEVENT
 END:VCALENDAR"""
+
+
+# Set the XML body for the PROPFIND request
+xml_body = '''<?xml version="1.0" encoding="UTF-8"?>
+<D:propfind xmlns:D="DAV:">
+<D:prop>
+    <D:resourcetype/>
+    <D:displayname/>
+</D:prop>
+</D:propfind>'''
 
 
 class DavicalClient:
@@ -45,12 +55,12 @@ class DavicalClient:
         self.httplink = httplink 
         self.username = username
         self.password = password
-        self.card_endpoint = '/{username}/{card_name}/' 
+        self.card_endpoint = '/test@scom.ca/addresses/' 
         self.calendar_endpoint = '/test@scom.ca/calendar/'
         self.vcard_id_chars = string.ascii_letters + string.digits
-        self.url= self.httplink + self.calendar_endpoint 
-        
-
+        self.calendar_url = self.httplink + self.calendar_endpoint 
+        self.card_url = self.httplink + self.card_endpoint
+    
     
     def make_request(self, method, endpoint, data):
         url = self.httplink 
@@ -63,8 +73,6 @@ class DavicalClient:
         response = requests.request( method, url, auth=(self.username, self.password), headers=headers )
         response.raise_for_status()
         return response
-    
-
    
     def addcard(self, vcard): 
         '''
@@ -97,39 +105,32 @@ class DavicalClient:
             print(f"Connection error occurred: {str(e)}")   
 
 
-
     def addcalendar(self, event_data):
         '''
          Extract the start date from the event data
          Convert event start date to datetime object
          Compare the event start date with the current date and time
          put event data to the server
-        
+         Find the start index and end index of the SUMMARY property
+         Extract the SUMMARY value
+         Split the summary into words
+         generate filename 
         '''
         start_date_index = event_data.find("DTSTART:") + len("DTSTART:")
         end_date_index = event_data.find("Z", start_date_index)
         event_start_date = event_data[start_date_index:end_date_index]
         event_start_datetime = datetime.strptime(event_start_date, "%Y%m%dT%H%M%S")
-        # Find the start index and end index of the SUMMARY property
+        
         summary_start = event_data.find("SUMMARY:") + len("SUMMARY:")
         summary_end = event_data.find("\n", summary_start)
-
-        # Extract the SUMMARY value
         summary = event_data[summary_start:summary_end].strip()
-
-        # # Generate the filename based on the SUMMARY value
-        # filename = f"event_{urllib.parse.quote(summary)}.ics"
-
-        # # Generate the filename based on the SUMMARY value
-        # filename = f"event_{summary.strip()}.ics"
-        # Join the summary words using a separator (e.g., underscore)
         separator = "_"
-        summary_words = summary.split()  # Split the summary into words
+        summary_words = summary.split()  
         joined_summary = separator.join(summary_words)
-        event_url = self.url + joined_summary + '.ics'
+        event_url = self.calendar_url + joined_summary + '.ics'
        
         current_datetime = datetime.utcnow()
-    
+        
         if event_start_datetime >= current_datetime:  
             result = requests.put(event_url, auth=(self.username, self.password), data = event_data, headers={'Content-Type': 'text/calendar'})
             if result.status_code in [200, 201, 203, 204, 205, 206, 207, 208, 226] :   
@@ -142,12 +143,17 @@ class DavicalClient:
 
 
     def searchcalendar(self, calendar_name):
-        # Specify the desired calendar name
-        calendar_name = 'Scom test Account calendar'    
-        # Connect to the CalDAV server
-        client = DAVClient(url=self.httplink, username=self.username, password=self.password)
+        '''
+        Specify the desired calendar name
+        Connect to the CalDAV server
+        Get a list of available calendars
+        Fetch events from the calendar using calendar.search
+        Process the iCal event data
+        Process the iCal data as needed
 
-        # Get a list of available calendars
+        '''
+        calendar_name = 'Scom test Account calendar'    
+        client = DAVClient(url=self.httplink, username=self.username, password=self.password)
         principal = client.principal()
         calendars = principal.calendars()
         calendar = None
@@ -159,57 +165,96 @@ class DavicalClient:
         if calendar is None:
             print("Calendar not found.")
             exit()
-        # Fetch events from the calendar using calendar.search
         events = calendar.search()
-        # Process the iCal event data
         calendar_events = []
         for event in events:
             event_data = event.data
             calendar_events.append(event_data)
-            # Process the iCal data as needed
         return calendar_events
 
-    def searchcard(self, card_name):
-        endpoint = '/{username}/{card_name}/' +'.vcf'
-        endpoint = endpoint.format(username=self.username, card_name=card_name)
-        url = self.httplink + endpoint
-        payload = {
-        'prop': 'getetag,address-data',
-        'filter': 'FN={card_name}'.format(card_name=urllib.parse.quote(card_name))
-    }
+
+    def searchcard(self):
+        '''
+        Set up connection parameters
+        Send the PROPFIND request 
+        Parse the XML response to extract the address book URLs
+        Send a request to retrieve the address book data
+        Parse the VCF file using the vobject library
+        Extract fields from the vCard
+        '''
+        
+        url = self.httplink  + self.card_endpoint
+        headers = {
+            'Content-Type': 'application/xml',
+            'Depth': '1'
+        }
+        address_books_list = []
+        url_list = []
+        address_books = []
+        response = requests.request('PROPFIND', url, data=xml_body, headers=headers, auth=(self.username, self.password))
+        if response.status_code == 207:   
+            xml_data = response.content
+            root = ET.fromstring(xml_data)
+            for response in root.findall('{DAV:}response'):
+                href = response.find('{DAV:}href').text
+                address_book_url = self.httplink + href
+                url_list.append(address_book_url)
+                if not address_book_url.endswith('.vcf'):
+                    continue
+                address_book_response = requests.get(address_book_url, auth=(self.username, self.password))
+                if  address_book_response.status_code == 200: 
+                    vcard = readOne(address_book_response.text)
+                    name = vcard.n.value
+                    email = vcard.email.value
+                    address_books.append({'name': name, 'email': email})
+                else:
+                    print(f"Failed to retrieve address book data at URL: {address_book_url}")
+        else:
+            print('Error:', response.status_code)
+        for address_book in address_books:
+            address_books_list.append(address_book)
+        return address_books_list
+
+
+
+    def delcal(self, summary):
+        separator = "_"
+        summary_words = summary.split()  
+        joined_summary = separator.join(summary_words)
+        username = 'test@scom.ca'
+        password = 'Testing123'
+        endpoint = f"/{username}/calendar/{joined_summary}"
+        event_url = self.httplink  +endpoint + '.ics'
+
+        if event_url is not None:              
+            response = requests.delete(event_url, auth=(username,password))
+            if response.status_code == 201:
+                print(f"Event'{summary}' has been deleted calendar.")
+            else:
+        
+                print(f"Failed to delete event '{summary}' from calendar.")
+                print(f"Error: {response.status_code}")
+        else:
+            print('Card does not exist')
+        
     
-        # URL-encode the payload data
-        encoded_payload = urllib.parse.urlencode(payload)
-        response = self.make_request('PROPFIND', endpoint, data = encoded_payload)
-        return response.text
-
-
     def delcard(self, calendar_name, card_name):
         endpoint = "/{username}/{calendar_name}/{card_name}.vcf"
         endpoint = endpoint.format(username=self.username, calendar_name=calendar_name, card_name = card_name)
         self.make_request("DELETE", endpoint)
 
-
-
-    def delcal(self, calendar_name):
-        endpoint = "/{username}/{calendar_name}/"
-        endpoint = endpoint.format(username=self.username, calendar_name=calendar_name)
-        self.make_request("DELETE", endpoint)
-        return 
-
-
         
 davclient = DavicalClient('https://davical.scom.ca', 'test@scom.ca', 'Testing123' )
 
 try:
-    print(davclient.searchcard('addresses'))
+    # events = davclient.searchcalendar('calendar')
+    # for event in events:
+    #     print(event)
+    # print(davclient.addcalendar(event_data))
+    print (davclient.delcal('new event 2'))
+    # print (davclient.addcard('addresses'))
 except requests.exceptions.RequestException as e:
     print("Connection Error:", e)
 
 
 
-
-
-
-        
-  
