@@ -6,6 +6,6 @@ Python code for --
 -Searching calendar and address book 
 -Deleting both an address book and calender
 -class for handling user input and generating a vcard
-- Class for hanfling user input and building an event 
+- Class for handling user input and building an event 
 
 
