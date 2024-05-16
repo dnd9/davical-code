@@ -5,11 +5,6 @@ from datetime import datetime, timedelta
 import logging
 import requests
 
-# Set up connection parameters
-url = 'https://davical.scom.ca/test@scom.ca/addresses'
-username = 'test@scom.ca'
-password = 'Testing123'
-
 
 # # Set the XML body for the PROPFIND request
 # xml_body = '''<?xml version="1.0" encoding="UTF-8"?>
